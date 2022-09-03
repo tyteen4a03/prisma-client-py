@@ -115,6 +115,12 @@ def handle_response_errors(resp: AbstractResponse[Any], data: Any) -> NoReturn:
             # As we can only check for this error by searching the message then this
             # comes with performance concerns.
             message = user_facing.get('message', '')
+
+            if code == 'P2028':
+                if message.endswith("Last state: 'Expired'."):
+                    raise prisma_errors.TransactionExpiredError()
+                raise prisma_errors.TransactionError(message)
+
             if 'A value is required but not set' in message:
                 raise prisma_errors.MissingRequiredValueError(error)
 

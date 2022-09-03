@@ -115,6 +115,23 @@ class InputError(DataError):
     pass
 
 
+class TransactionError(PrismaError):
+    pass
+
+
+class TransactionExpiredError(TransactionError):
+    def __init__(self) -> None:
+        super().__init__('Attempted operation on an expired transaction.')
+
+
+class TransactionNotStartedError(TransactionError):
+    def __init__(self) -> None:
+        super().__init__(
+            'Transaction has not been started yet.\n'
+            'Transactions must be used within a context manager.'
+        )
+
+
 class BuilderError(PrismaError):
     pass
 

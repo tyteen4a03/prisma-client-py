@@ -3,11 +3,12 @@ datasource db {
   url      = "file:dev.db"
 }
 
-generator client {
+generator db {
   provider                    = "prisma-client-py"
   interface                   = "asyncio"
   recursive_type_depth        = 5
   partial_type_generator      = "tests/scripts/partial_type_generator.py"
+  previewFeatures             = ["interactiveTransactions"]
   enable_experimental_decimal = true
 }
 

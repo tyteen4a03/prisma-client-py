@@ -1,6 +1,7 @@
 {% include '_header.py.jinja' %}
 {% from '_utils.py.jinja' import is_async, maybe_async_def, maybe_await, methods, operations, recursive_types, active_provider with context %}
 # -- template client.py.jinja --
+import warnings
 from pathlib import Path
 from types import TracebackType
 
@@ -8,7 +9,7 @@ from . import types, models, errors, actions
 from .types import DatasourceOverride, HttpConfig
 from ._types import BaseModelT
 from .engine import AbstractEngine, QueryEngine
-from .builder import QueryBuilder
+from .builder import QueryBuilder, dumps
 from .generator.models import EngineType, OptionalValueFromEnvVar
 
 
@@ -27,6 +28,21 @@ SCHEMA = '''
 {{ datamodel }}
 '''
 SCHEMA_PATH = Path('{{ schema_path.as_posix() }}')
+
+{% set itx_missing_doc = clean_multiline('''
+        Interactive transactions require a preview feature flag to be set.
+
+        If you would like to enable interactive transactions then you should modify
+        your client definition in your Prisma Schema file:
+
+        ```prisma
+        generator py {
+            provider = "prisma-client-py"
+            previewFeatures = ["interactiveTransactions"]
+        }
+        ```
+''')
+%}
 
 ENGINE_TYPE: EngineType = EngineType.{{ generator.config.engine_type }}
 
@@ -125,11 +141,12 @@ class Prisma:
         '{{ model.name.lower() }}',
         {% endfor %}
         '__engine',
-        '_active_provider',
-        '_log_queries',
+        '_tx_id',
         '_datasource',
-        '_connect_timeout',
+        '_log_queries',
         '_http_config',
+        '_connect_timeout',
+        '_active_provider',
     )
 
     def __init__(
@@ -155,6 +172,7 @@ class Prisma:
         self._datasource = datasource
         self._connect_timeout = connect_timeout
         self._http_config: HttpConfig = http or {}
+        self._tx_id: Optional[str] = None
 
         if use_dotenv:
             load_env()
@@ -163,7 +181,10 @@ class Prisma:
             register(self)
 
     def __del__(self) -> None:
-        if self.__engine is not None:
+        # we are not in a transaction, should be safe to stop
+        # the query engine
+        # TODO: what if there are outstanding transactions?
+        if self.__engine is not None and not self.is_transaction():
             self.__engine.stop()
             self.__engine = None
 
@@ -304,6 +325,32 @@ class Prisma:
         """Returns a context manager for grouping write queries into a single transaction."""
         return Batch(client=self)
 
+    {% if 'interactiveTransactions' in generator.preview_features %}
+    def tx(self, *, max_wait: int = 2000, timeout: int = 5000) -> 'TransactionManager':
+        """Returns a context manager for executing queries within a transaction.
+
+        Entering the context manager returns a new Prisma instance wrapping all
+        actions within a transaction, queries will be isolated to the Prisma instance and
+        will not be commited to the database until the context manager exits.
+        """
+        return TransactionManager(client=self, max_wait=max_wait, timeout=timeout)
+    {% else %}
+    def tx(self, *, max_wait: int = ..., timeout: int = ...) -> NoReturn:
+        """
+        {{ itx_missing_doc }}
+        """
+        # TODO: fix formatting for this message.
+        raise RuntimeError(
+            '''
+            {{ itx_missing_doc }}
+            '''
+        )
+    {% endif %}
+
+    def is_transaction(self) -> bool:
+        """Returns true if the client is wrapped within a transaction"""
+        return self._tx_id is not None
+
     # TODO: don't return Any
     {{ maybe_async_def }}_execute(
         self,
@@ -320,7 +367,16 @@ class Prisma:
             arguments=arguments,
             root_selection=root_selection,
         )
-        return {{ maybe_await }}self._engine.query(builder.build())
+        return {{ maybe_await }}self._engine.query(builder.build(), tx_id=self._tx_id)
+
+    def _copy(self) -> 'Prisma':
+        """Return a new Prisma instance using the same engine process (if connected)."""
+        new = Prisma(use_dotenv=False, log_queries=self._log_queries)
+
+        if self.__engine is not None:
+            new._engine = self.__engine
+
+        return new
 
     def _create_engine(self, dml: str = SCHEMA) -> AbstractEngine:
         if ENGINE_TYPE == EngineType.binary:
@@ -341,6 +397,10 @@ class Prisma:
         if engine is None:
             raise errors.ClientNotConnectedError()
         return engine
+
+    @_engine.setter
+    def _engine(self, engine: QueryEngine) -> None:
+        self.__engine = engine
 
     def _make_sqlite_datasource(self) -> DatasourceOverride:
         return {
@@ -366,6 +426,92 @@ class Prisma:
         }
 
 
+class TransactionManager:
+    """Context manager for wrapping a Prisma instance within a transaction.
+
+    This should never be created manually, instead it should be used
+    through the Prisma().tx() method.
+    """
+
+    def __init__(self, client: Prisma, max_wait: int, timeout: int) -> None:
+        self.__client = client
+        self._max_wait = max_wait
+        self._timeout = timeout
+        self._tx_id: Optional[str] = None
+
+    # TODO: these endpoints should be abstract methods in the engine class
+
+    {{ maybe_async_def }}start(self, *, _from_context: bool = False) -> Prisma:
+        """Start the transaction and return the wrapped Prisma instance"""
+        if self.__client.is_transaction():
+            # if we were called from the context manager then the stacklevel
+            # needs to be one higher to warn on the actual offending code
+            warnings.warn(
+                'The current client is already in a transaction.',
+                UserWarning,
+                stacklevel=3 if _from_context else 2
+            )
+
+        result = {{ maybe_await }}self.__client._engine.request(
+            'POST',
+            '/transaction/start',
+            content=dumps(
+                {
+                    'timeout': self._timeout,
+                    'max_wait': self._max_wait,
+                }
+            ),
+        )
+        self._tx_id = tx_id = result['id']
+        client = self.__client._copy()
+        client._tx_id = tx_id
+        return client
+
+    {{ maybe_async_def }}commit(self) -> None:
+        """Commit the transaction to the database, this transaction will no longer be usable"""
+        if self._tx_id is None:
+            raise errors.TransactionNotStartedError()
+
+        {{ maybe_await }}self.__client._engine.request(
+            'POST', f'/transaction/{self._tx_id}/commit'
+        )
+
+    {{ maybe_async_def }}rollback(self) -> None:
+        """Do not commit the changes to the database, this transaction will no longer be usable"""
+        if self._tx_id is None:
+            raise errors.TransactionNotStartedError()
+
+        {{ maybe_await }}self.__client._engine.request(
+            'POST', f'/transaction/{self._tx_id}/rollback'
+        )
+
+    {% if is_async %}
+    async def __aenter__(self) -> Prisma:
+        return await self.start(_from_context=True)
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        if exc is None:
+            await self.commit()
+    {% else %}
+    def __enter__(self) -> Prisma:
+        return self.start(_from_context=True)
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        if exc is None:
+            self.commit()
+    {% endif %}
+
+
 # TODO: this should return the results as well
 # TODO: don't require copy-pasting arguments between actions and batch actions
 class Batch:
@@ -388,8 +534,6 @@ class Batch:
     {{ maybe_async_def }}commit(self) -> None:
         """Execute the queries"""
         # TODO: normalise this, we should still call client._execute
-        from .builder import dumps
-
         queries = self.__queries
         self.__queries = []
 
@@ -403,7 +547,10 @@ class Batch:
             ],
             'transaction': True,
         }
-        {{ maybe_await }}self.__client._engine.query(dumps(payload))
+        {{ maybe_await }}self.__client._engine.query(
+            dumps(payload),
+            tx_id=self.__client._tx_id,
+        )
 
     {% if is_async %}
     async def __aenter__(self) -> 'Batch':

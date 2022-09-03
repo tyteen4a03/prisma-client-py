@@ -156,8 +156,21 @@ class QueryEngine(HTTPEngine):
                 'Could not connect to the query engine'
             ) from last_exc
 
-    {{ maybe_async_def }}query(self, content: str) -> Any:
-        return {{ maybe_await }}self.request('POST', '/', content=content)
+    {{ maybe_async_def }}query(
+        self,
+        content: str,
+        tx_id: Optional[str] = None
+    ) -> Any:
+        headers: Dict[str, str] = {}
+        if tx_id is not None:
+            headers['X-transaction-id'] = tx_id
+
+        return {{ maybe_await }}self.request(
+            'POST',
+            '/',
+            content=content,
+            headers=headers,
+        )
 
 
 # black does not respect the fmt: off comment without this

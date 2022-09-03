@@ -14,6 +14,7 @@ import decimal
 import datetime
 from typing import (
     TYPE_CHECKING,
+    NoReturn,
     Optional,
     Iterable,
     Iterator,
@@ -80,7 +81,7 @@ class AbstractEngine(ABC):
         ...
 
     @abstractmethod
-    def query(self, content: str) -> Any:
+    def query(self, content: str, tx_id: Optional[str] = None) -> Any:
         """Execute a GraphQL query.
 
         This method expects a JSON object matching this structure:

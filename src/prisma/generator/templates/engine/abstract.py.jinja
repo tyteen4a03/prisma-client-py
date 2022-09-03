@@ -46,7 +46,7 @@ class AbstractEngine(ABC):
         ...
 
     @abstractmethod
-    {{ maybe_async_def }}query(self, content: str) -> Any:
+    {{ maybe_async_def }}query(self, content: str, tx_id: Optional[str] = None) -> Any:
         """Execute a GraphQL query.
 
         This method expects a JSON object matching this structure:
