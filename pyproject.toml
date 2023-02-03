@@ -34,3 +34,33 @@ reportUnknownArgumentType = false
 reportUnusedCallResult = false
 reportImplicitStringConcatenation = false
 reportCallInDefaultInitializer = true
+
+[tool.poetry]
+name = "prisma-client-py"
+version = "0.8.1a1"
+description = ""
+authors = ["tyteen4a03 <tyteen4a03@thelastcode.io>"]
+readme = "README.md"
+packages = [{include = "prisma_client_py"}]
+
+[tool.poetry.dependencies]
+python = ">=3.6.1"
+httpx = ">=0.19.0"
+Jinja2 = ">=2.11.2"
+pydantic = ">=1.8.0"
+click = ">=7.1.2"
+python-dotenv = ">=0.12.0"
+typing-extensions = ">=3.7"
+tomlkit = "^0.11.6"
+cached-property = "^1.5.2"
+
+
+[[tool.poetry.source]]
+name = "nexus3"
+url = "https://nexus3.aws.corpclash.com/repository/clash-pypi-shared/"
+default = false
+secondary = false
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
