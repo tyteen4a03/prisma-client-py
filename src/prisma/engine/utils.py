@@ -149,6 +149,7 @@ def get_open_port() -> int:
 def handle_response_errors(resp: AbstractResponse[Any], data: Any) -> NoReturn:
     for error in data:
         try:
+            base_error_message = error.get('error', '')
             user_facing = error.get('user_facing_error', {})
             code = user_facing.get('error_code')
             if code is None:
@@ -163,8 +164,12 @@ def handle_response_errors(resp: AbstractResponse[Any], data: Any) -> NoReturn:
             message = user_facing.get('message', '')
 
             if code == 'P2028':
-                if message.endswith("Last state: 'Expired'."):
-                    raise prisma_errors.TransactionExpiredError()
+                if base_error_message.startswith(
+                    'Transaction already closed: A query cannot be executed on an expired transaction'
+                ):
+                    raise prisma_errors.TransactionExpiredError(
+                        base_error_message
+                    )
                 raise prisma_errors.TransactionError(message)
 
             if 'A value is required but not set' in message:

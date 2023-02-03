@@ -15,7 +15,6 @@ import decimal
 import datetime
 from typing import (
     TYPE_CHECKING,
-    NoReturn,
     Optional,
     Iterable,
     Iterator,
@@ -56,6 +55,7 @@ from ..binaries import platform
 from ..utils import time_since, _env_bool
 from ..types import DatasourceOverride
 from ..builder import dumps
+from ._types import TransactionId
 
 
 __all__ = ('QueryEngine',)
@@ -202,7 +202,8 @@ class QueryEngine(HTTPEngine):
     def query(
         self,
         content: str,
-        tx_id: Optional[str] = None
+        *,
+        tx_id: Optional[TransactionId] = None
     ) -> Any:
         headers: Dict[str, str] = {}
         if tx_id is not None:
@@ -215,6 +216,23 @@ class QueryEngine(HTTPEngine):
             headers=headers,
         )
 
+    def start_transaction(self, *, content: str) -> TransactionId:
+        result = self.request(
+            'POST',
+            '/transaction/start',
+            content=content,
+        )
+        return TransactionId(result['id'])
+
+    def commit_transaction(self, tx_id: TransactionId) -> None:
+        self.request(
+            'POST', f'/transaction/{tx_id}/commit'
+        )
+
+    def rollback_transaction(self, tx_id: TransactionId) -> None:
+        self.request(
+            'POST', f'/transaction/{tx_id}/rollback'
+        )
 
 # black does not respect the fmt: off comment without this
 # fmt: on

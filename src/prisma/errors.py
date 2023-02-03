@@ -120,15 +120,14 @@ class TransactionError(PrismaError):
 
 
 class TransactionExpiredError(TransactionError):
-    def __init__(self) -> None:
-        super().__init__('Attempted operation on an expired transaction.')
+    pass
 
 
 class TransactionNotStartedError(TransactionError):
     def __init__(self) -> None:
         super().__init__(
             'Transaction has not been started yet.\n'
-            'Transactions must be used within a context manager.'
+            'Transactions must be used within a context manager or started manually.'
         )
 
 
