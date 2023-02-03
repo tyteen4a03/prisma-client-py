@@ -10,8 +10,6 @@ on:
       - "LICENSE"
       - "mkdocs.yml"
   pull_request:
-    branches:
-      - main
     paths-ignore:
       - "*.md"
       - ".vscode/**"
@@ -23,6 +21,7 @@ jobs:
     name: test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: [3.7, 3.8, 3.9, "3.10", "3.11.0-rc.1"]
@@ -38,12 +37,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install codecov==2.1.11 .[dev]
+          pip install . -r pipelines/requirements/ci.txt
 
       - uses: actions/cache@v3
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('pipelines/requirements/*.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -53,8 +52,6 @@ jobs:
           key: ${{ runner.os }}-mypy
           restore-keys: |
             ${{ runner.os }}-mypy
-
-      # TODO: cache prisma engines
 
       - name: Setup database
         # for some reason prisma creates the database where the schema is stored
@@ -69,19 +66,15 @@ jobs:
 
       - name: Run tests
         run: |
-          python scripts/ci.py -s test --no-error-on-missing-interpreters -- --ignore=tests/integrations/postgresql
+          python scripts/ci.py -s test --no-error-on-missing-interpreters
         env:
           TARGET_PYTHON: ${{ matrix.python-version }}
 
-      - name: Combine coverage
-        run: |
-          nox -s report
-
       - name: Upload coverage
-        run: |
-          codecov --file coverage.xml
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-data
+          path: ".cache/.coverage.*"
 
   typesafety:
     name: typesafety
@@ -102,19 +95,23 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .[dev]
+          pip install . -r pipelines/requirements/ci.txt
 
       - uses: actions/cache@v3
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('pipelines/requirements/*.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Run tests
-        # TODO: run mypy too
+      - name: Run Pyright tests
         run: |
           nox -s typesafety-pyright
+
+      - name: Run mypy tests
+        run: |
+          nox -s typesafety-mypy
+
 
   lint:
     name: lint
@@ -134,19 +131,25 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/dev.txt
+          pip install -U . -r pipelines/requirements/ci.txt
 
       - uses: actions/cache@v3
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('pipelines/requirements/*.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # TODO: add codecov for our mypy plugin
+      # TODO: add coverage for our mypy plugin
       - name: Check linters
         run: |
           nox -s lint
+
+      # Ensure that all Prisma Schema files are up to date
+      - name: Check formatting
+        run: |
+          nox -s format
+          git diff --exit-code
 
   mypy:
     name: mypy
@@ -166,12 +169,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/dev.txt
+          pip install -U . -r pipelines/requirements/ci.txt
 
       - uses: actions/cache@v3
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('pipelines/requirements/*.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -182,72 +185,137 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mypy
 
-      # TODO: add codecov for our mypy plugin
+      # TODO: figure out how to get coverage for the mypy plugin
       - name: Check Mypy
         run: |
           nox -s mypy
 
-  postgres:
-    name: postgres
+  databases:
+    name: ${{ matrix.name }} ${{ matrix.version }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - python-version: 3.9
+          - name: MySQL
+            version: '8.0'
+            env: MYSQL_URL
+            url: mysql://prisma:prisma@localhost:3307/prisma
 
-    services:
-      postgres:
-        # Docker Hub image
-        image: postgres
+          - name: SQLite
+            version: ''
+            env: SQLITE_URL
+            url: file:dev.db
 
-        # Provide the password for postgres
-        env:
-          POSTGRES_PASSWORD: postgres
+          - name: PostgreSQL
+            version: '10'
+            env: POSTGRESQL_URL
+            url: postgresql://postgres:prisma@localhost:5432/postgres
 
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          - name: PostgreSQL
+            version: '15'
+            env: POSTGRESQL_URL
+            url: postgresql://postgres:prisma@localhost:5438/postgres
 
-        ports:
-          # Maps tcp port 5432 on service container to the host
-          - 5432:5432
+          - name: CockroachDB
+            version: '22'
+            env: COCKROACHDB_URL
+            url: postgresql://prisma@localhost:26257/postgres
+
+          - name: MariaDB
+            version: '10.0'
+            env: MARIADB_URL
+            url: mysql://root:prisma@localhost:3308/prisma?connect_timeout=20&socket_timeout=60
 
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.10
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install codecov==2.1.11 .[dev]
+          pip install -U . -r pipelines/requirements/ci.txt
 
       - uses: actions/cache@v3
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements/*.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('pipelines/requirements/*.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # TODO: cache prisma engines
+      - name: Start ${{ matrix.name }}
+        if: matrix.name != 'SQLite'
+        run: |
+          coverage run -m nox -s databases -- serve ${{ matrix.name }} --version=${{ matrix.version }}
 
       - name: Run tests
         run: |
-          nox -s setup test report --no-error-on-missing-interpreters -- --confcutdir . tests/integrations/postgresql
+          coverage run -m nox -s databases -- test --coverage --databases=${{ matrix.name }}
         env:
-          PRISMA_PY_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          ${{ matrix.env }}: ${{ matrix.url }}
+          COVERAGE_FILE: .cache/.coverage.databases
+
+      # these tests ensure that unsupported features, e.g. enums on SQLite actually fail
+      - name: Run inverse tests
+        run: |
+          coverage run -m nox -s databases -- test-inverse --coverage --databases=${{ matrix.name }}
+        env:
+          ${{ matrix.env }}: ${{ matrix.url }}
+          COVERAGE_FILE: .cache/.coverage.databases
 
       - name: Upload coverage
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-data
+          path: ".cache/.coverage*"
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    needs: [databases, test]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
         run: |
-          codecov --file coverage.xml
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          python -m pip install --upgrade pip
+          pip install -U . -r pipelines/requirements/ci.txt
+
+      - name: Download coverage data.
+        uses: actions/download-artifact@v3
+        with:
+          name: coverage-data
+          path: .cache/
+
+      - name: Check coverage requirements
+        run: |
+          nox -s report-strict
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: htmlcov
+          path: htmlcov
+
+      - name: Update static coverage
+        if: (success() || failure()) && github.ref == 'refs/heads/main' && github.repository == 'RobertCraigie/prisma-client-py'
+        run: |
+          nox -s push-coverage
+
+      # delete the temporary coverage artifacts to save on unnecessary cloud storage usage
+      - uses: geekyeggo/delete-artifact@v2
+        with:
+          name: coverage-data
 
   docker:
     name: docker
@@ -255,34 +323,46 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        docker-platform: ["linux/amd64"]
-        # TODO: Uncomment this to add testing support for arm64 and delete
-        # the above
-        # docker-platform: ["linux/amd64", "linux/arm64"]
-        python-os-distro: ["slim-bullseye", "alpine"]
+        docker-platform: [linux/amd64, linux/arm64]
+        python-os-distro: [slim-bullseye, alpine]
+        exclude:
+          # Dockerfile is currently broken for alpine / arm64
+          # https://github.com/RobertCraigie/prisma-client-py/issues/581
+          - docker-platform: linux/arm64
+            python-os-distro: alpine
     steps:
       - uses: actions/checkout@v3
+
       # https://github.com/docker/build-push-action/
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+
       - name: Docker Build
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v4
         # https://github.com/docker/build-push-action/#inputs
         # Test each platform individually for easier testing
         with:
           context: .
           file: tests/Dockerfile
           platforms: "${{ matrix.docker-platform }}"
-          build-args: "${{ matrix.python-os-distro }}"
+          build-args: OS_DISTRO=${{ matrix.python-os-distro }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
+  # Note: Windows does not play well with the standard GH Docker + buildx
+  # actions
   docker-windows:
     name: docker (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
-
       - name: Docker Build
+        # Use --% to allow double hyphen
+        # Caching not currently working since we don't use buildx yet, windows
+        # support seems poor because of interactions with --privileged
+        # --cache-from=type=gha --cache-to=type=gha,mode=max
         run: |
-          docker build -f tests/windows.Dockerfile -t prisma-client-py .
+          docker build --% -f tests/windows.Dockerfile -t prisma-client-py .
