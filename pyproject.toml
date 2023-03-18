@@ -37,7 +37,7 @@ reportCallInDefaultInitializer = true
 
 [tool.poetry]
 name = "prisma-client-py"
-version = "0.8.1a1"
+version = "0.8.3a1"
 description = ""
 authors = ["tyteen4a03 <tyteen4a03@thelastcode.io>"]
 readme = "README.md"
